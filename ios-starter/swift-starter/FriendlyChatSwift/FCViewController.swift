@@ -34,6 +34,9 @@ class FCViewController: UIViewController, UITableViewDataSource, UITableViewDele
 InviteDelegate {
     
     // Instance variables
+    @IBOutlet weak var chatTextFieldBottomConstraint: NSLayoutConstraint!
+    
+    
     @IBOutlet weak var textField: UITextField!
     @IBOutlet weak var sendButton: UIButton!
     var ref: DatabaseReference!
@@ -50,6 +53,11 @@ InviteDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         
+        // Setup the KeyboardWillShow observer for ChatTextFieldBottomConstraint
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow(notification:)), name: NSNotification.Name.UIKeyboardWillShow, object: nil)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillHide(notification:)), name: NSNotification.Name.UIKeyboardWillHide, object: nil)
+        
         self.clientTable.register(UITableViewCell.self, forCellReuseIdentifier: "tableViewCell")
         
         configureDatabase()
@@ -57,6 +65,30 @@ InviteDelegate {
         configureRemoteConfig()
         fetchConfig()
         loadAd()
+    }
+    
+    func keyboardWillShow(notification: Notification) {
+        if let info = notification.userInfo {
+            let rect: CGRect = info["UIKeyboardFrameEndUserInfoKey"] as! CGRect
+            self.view.layoutIfNeeded()
+            
+            UIView.animate(withDuration: 0.25) {
+                self.view.layoutIfNeeded()
+                self.chatTextFieldBottomConstraint.constant = rect.height + 20
+            }
+        }
+    }
+    
+    func keyboardWillHide(notification: Notification) {
+        if let info = notification.userInfo {
+            let rect: CGRect = info["UIKeyboardFrameEndUserInfoKey"] as! CGRect
+            self.view.layoutIfNeeded()
+            
+            UIView.animate(withDuration: 0.25) {
+                self.view.layoutIfNeeded()
+                self.chatTextFieldBottomConstraint.constant = 20
+            }
+        }
     }
     
     deinit {
