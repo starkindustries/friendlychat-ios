@@ -76,32 +76,88 @@ InviteDelegate {
         })
     }
     
-    
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         // Dequeue cell
-        let cell = self.clientTable.dequeueReusableCell(withIdentifier: "tableViewCell", for: indexPath)
+        let cell = self.clientTable .dequeueReusableCell(withIdentifier: "tableViewCell", for: indexPath)
         // Unpack message from Firebase DataSnapshot
-        let messageSnapshot = self.messages[indexPath.row]
-        guard let message = messageSnapshot.value as? [String: String] else { return cell }
+        let messageSnapshot: DataSnapshot! = self.messages[indexPath.row]
+        guard let message = messageSnapshot.value as? [String:String] else { return cell }
         let name = message[Constants.MessageFields.name] ?? ""
-        let text = message[Constants.MessageFields.text] ?? ""
-        cell.textLabel?.text = name + ": " + text
-        cell.imageView?.image = UIImage(named: "ic_account_circle")
-        if let photoURL = message[Constants.MessageFields.photoURL], let URL = URL(string: photoURL),
-            let data = try? Data(contentsOf: URL) {
-            cell.imageView?.image = UIImage(data: data)
+        if let imageURL = message[Constants.MessageFields.imageURL] {
+            if imageURL.hasPrefix("gs://") {
+                Storage.storage().reference(forURL: imageURL).getData(maxSize: INT64_MAX) {(data, error) in
+                    if let error = error {
+                        print("Error downloading: \(error)")
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        cell.imageView?.image = UIImage.init(data: data!)
+                        cell.setNeedsLayout()
+                    }
+                }
+            } else if let URL = URL(string: imageURL), let data = try? Data(contentsOf: URL) {
+                cell.imageView?.image = UIImage.init(data: data)
+            }
+            cell.textLabel?.text = "sent by: \(name)"
+        } else {
+            let text = message[Constants.MessageFields.text] ?? ""
+            cell.textLabel?.text = name + ": " + text
+            cell.imageView?.image = UIImage(named: "ic_account_circle")
+            if let photoURL = message[Constants.MessageFields.photoURL], let URL = URL(string: photoURL),
+                let data = try? Data(contentsOf: URL) {
+                cell.imageView?.image = UIImage(data: data)
+            }
         }
         return cell
     }
+
     
     func configureStorage() {
+        storageRef = Storage.storage().reference()
     }
     
     func configureRemoteConfig() {
+        remoteConfig = RemoteConfig.remoteConfig()
+        // Create Remote Config Setting to enable developer mode.
+        // Fetching configs from the server is normally limited to 5 requests per hour.
+        // Enabling developer mode allows many more requests to be made per hour, so developers
+        // can test different config values during development.
+        let remoteConfigSettings = RemoteConfigSettings(developerModeEnabled: true)
+        remoteConfig.configSettings = remoteConfigSettings!
     }
+
     
     func fetchConfig() {
+        var expirationDuration: TimeInterval = 3600
+        // If in developer mode cacheExpiration is set to 0 so each fetch will retrieve values from
+        // the server.
+        if self.remoteConfig.configSettings.isDeveloperModeEnabled {
+            expirationDuration = 0
+        }
+        
+        // cacheExpirationSeconds is set to cacheExpiration here, indicating that any previously
+        // fetched and cached config would be considered expired because it would have been fetched
+        // more than cacheExpiration seconds ago. Thus the next fetch would go to the server unless
+        // throttling is in progress. The default expiration duration is 43200 (12 hours).
+        remoteConfig.fetch(withExpirationDuration: expirationDuration) { [weak self] (status, error) in
+            if status == .success {
+                print("Config fetched!")
+                guard let strongSelf = self else { return }
+                strongSelf.remoteConfig.activateFetched()
+                let friendlyMsgLength = strongSelf.remoteConfig["friendly_msg_length"]
+                if friendlyMsgLength.source != .static {
+                    strongSelf.msglength = friendlyMsgLength.numberValue!
+                    print("Friendly msg length config: \(strongSelf.msglength)")
+                }
+            } else {
+                print("Config not fetched")
+                if let error = error {
+                    print("Error \(error)")
+                }
+            }
+        }
     }
+
     
     @IBAction func didPressFreshConfig(_ sender: AnyObject) {
         fetchConfig()
@@ -177,15 +233,35 @@ InviteDelegate {
         if #available(iOS 8.0, *), let referenceURL = info[UIImagePickerControllerReferenceURL] as? URL {
             let assets = PHAsset.fetchAssets(withALAssetURLs: [referenceURL], options: nil)
             let asset = assets.firstObject
-            asset?.requestContentEditingInput(with: nil, completionHandler: { (contentEditingInput, info) in
+            asset?.requestContentEditingInput(with: nil, completionHandler: { [weak self] (contentEditingInput, info) in
                 let imageFile = contentEditingInput?.fullSizeImageURL
                 let filePath = "\(uid)/\(Int(Date.timeIntervalSinceReferenceDate * 1000))/\((referenceURL as AnyObject).lastPathComponent!)"
+                guard let strongSelf = self else { return }
+                strongSelf.storageRef.child(filePath)
+                    .putFile(from: imageFile!, metadata: nil) { (metadata, error) in
+                        if let error = error {
+                            let nsError = error as NSError
+                            print("Error uploading: \(nsError.localizedDescription)")
+                            return
+                        }
+                        strongSelf.sendMessage(withData: [Constants.MessageFields.imageURL: strongSelf.storageRef.child((metadata?.path)!).description])
+                }
             })
         } else {
             guard let image = info[UIImagePickerControllerOriginalImage] as? UIImage else { return }
             let imageData = UIImageJPEGRepresentation(image, 0.8)
-            guard let uid = Auth.auth().currentUser?.uid else { return }
             let imagePath = "\(uid)/\(Int(Date.timeIntervalSinceReferenceDate * 1000)).jpg"
+            let metadata = StorageMetadata()
+            metadata.contentType = "image/jpeg"
+            self.storageRef.child(imagePath)
+                .putData(imageData!, metadata: metadata) { [weak self] (metadata, error) in
+                    if let error = error {
+                        print("Error uploading: \(error)")
+                        return
+                    }
+                    guard let strongSelf = self else { return }
+                    strongSelf.sendMessage(withData: [Constants.MessageFields.imageURL: strongSelf.storageRef.child((metadata?.path)!).description])
+            }
         }
     }
     
